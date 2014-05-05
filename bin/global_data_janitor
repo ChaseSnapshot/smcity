@@ -1,0 +1,62 @@
+#!/usr/bin/python
+
+import datetime
+import logging
+import signal
+import sys
+
+from boto.dynamodb2.table import Table
+from ConfigParser import ConfigParser
+from threading import Thread
+from time import strftime
+
+print "Checking the command line arguments..."
+if len(sys.argv) != 2:
+    print "Usage: global_data_janitor [config_file]"
+    sys.exit(-1)
+
+print "Setting up the logging configuration..."
+logging.config.fileConfig(sys.argv[1])
+logging.getLogger('boto').setLevel(logging.INFO)
+
+print "Loading the config settings..."
+config = ConfigParser()
+configFile = open(sys.argv[1])
+config.readfp(configFile)
+configFile.close()
+
+print "Opening Dynamodb2 table..."
+global_table = Table(config.get('database', 'global_data_table'))
+max_age = config.getint('janitor', 'max_record_age')
+
+is_shutting_down = False
+def delete_old_records():
+    print "Calculating age limit..."
+    age_limit = datetime.datetime.now() + datetime.timedelta(hours=5) - datetime.timedelta(days=max_age)
+    age_limit = age_limit.timetuple()
+
+    print "Scanning table..."
+    for record in global_table.scan(timestamp__lt = strftime('%Y-%m-%d %H:%M:%S', age_limit)):
+        if is_shutting_down is True: # If the user has terminated the janitor program
+            print "Shutting down..."
+            break
+
+        print "Deleting record..."
+        record.delete()
+
+    print "Done scanning table!"
+    sys.exit(0)
+
+print "Spinning up the janitor thread..."
+thread = Thread(target=delete_old_records)
+thread.is_daemon = False
+thread.start()
+
+def kill_signal_handler(signal, frame):
+    print 'Caught CTRL-C signal. Shutting down...'
+    is_shutting_down = True
+
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, kill_signal_handler)
+#signal.pause()
